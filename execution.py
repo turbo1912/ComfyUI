@@ -13,6 +13,7 @@ import nodes
 
 import comfy.model_management
 
+
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
     input_data_all = {}
@@ -26,7 +27,9 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_da
             obj = outputs[input_unique_id][output_index]
             input_data_all[x] = obj
         else:
-            if ("required" in valid_inputs and x in valid_inputs["required"]) or ("optional" in valid_inputs and x in valid_inputs["optional"]):
+            if ("required" in valid_inputs and x in valid_inputs["required"]) or (
+                "optional" in valid_inputs and x in valid_inputs["optional"]
+            ):
                 input_data_all[x] = [input_data]
 
     if "hidden" in valid_inputs:
@@ -36,10 +39,11 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_da
                 input_data_all[x] = [prompt]
             if h[x] == "EXTRA_PNGINFO":
                 if "extra_pnginfo" in extra_data:
-                    input_data_all[x] = [extra_data['extra_pnginfo']]
+                    input_data_all[x] = [extra_data["extra_pnginfo"]]
             if h[x] == "UNIQUE_ID":
                 input_data_all[x] = [unique_id]
     return input_data_all
+
 
 def map_node_over_list(obj, input_data_all, func, allow_interrupt=False):
     # check if node wants the lists
@@ -48,41 +52,43 @@ def map_node_over_list(obj, input_data_all, func, allow_interrupt=False):
         intput_is_list = obj.INPUT_IS_LIST
 
     max_len_input = max([len(x) for x in input_data_all.values()])
-     
+
     # get a slice of inputs, repeat last input when list isn't long enough
     def slice_dict(d, i):
         d_new = dict()
-        for k,v in d.items():
+        for k, v in d.items():
             d_new[k] = v[i if len(v) > i else -1]
         return d_new
-    
+
     results = []
     if intput_is_list:
         if allow_interrupt:
             nodes.before_node_execution()
         results.append(getattr(obj, func)(**input_data_all))
-    else: 
+    else:
         for i in range(max_len_input):
             if allow_interrupt:
                 nodes.before_node_execution()
             results.append(getattr(obj, func)(**slice_dict(input_data_all, i)))
     return results
 
+
 def get_output_data(obj, input_data_all):
-    
     results = []
     uis = []
-    return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True)
+    return_values = map_node_over_list(
+        obj, input_data_all, obj.FUNCTION, allow_interrupt=True
+    )
 
     for r in return_values:
         if isinstance(r, dict):
-            if 'ui' in r:
-                uis.append(r['ui'])
-            if 'result' in r:
-                results.append(r['result'])
+            if "ui" in r:
+                uis.append(r["ui"])
+            if "result" in r:
+                results.append(r["result"])
         else:
             results.append(r)
-    
+
     output = []
     if len(results) > 0:
         # check which outputs need concatenating
@@ -97,10 +103,11 @@ def get_output_data(obj, input_data_all):
             else:
                 output.append([o[i] for o in results])
 
-    ui = dict()    
+    ui = dict()
     if len(uis) > 0:
         ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
     return output, ui
+
 
 def format_value(x):
     if x is None:
@@ -110,10 +117,13 @@ def format_value(x):
     else:
         return str(x)
 
-def recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui):
+
+def recursive_execute(
+    server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui
+):
     unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
-    class_type = prompt[unique_id]['class_type']
+    inputs = prompt[unique_id]["inputs"]
+    class_type = prompt[unique_id]["class_type"]
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
     if unique_id in outputs:
         return (True, None, None)
@@ -125,17 +135,32 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             input_unique_id = input_data[0]
             output_index = input_data[1]
             if input_unique_id not in outputs:
-                result = recursive_execute(server, prompt, outputs, input_unique_id, extra_data, executed, prompt_id, outputs_ui)
+                result = recursive_execute(
+                    server,
+                    prompt,
+                    outputs,
+                    input_unique_id,
+                    extra_data,
+                    executed,
+                    prompt_id,
+                    outputs_ui,
+                )
                 if result[0] is not True:
                     # Another node failed further upstream
                     return result
 
     input_data_all = None
     try:
-        input_data_all = get_input_data(inputs, class_def, unique_id, outputs, prompt, extra_data)
+        input_data_all = get_input_data(
+            inputs, class_def, unique_id, outputs, prompt, extra_data
+        )
         if server.client_id is not None:
             server.last_node_id = unique_id
-            server.send_sync("executing", { "node": unique_id, "prompt_id": prompt_id }, server.client_id)
+            server.send_sync(
+                "executing",
+                {"node": unique_id, "prompt_id": prompt_id},
+                server.client_id,
+            )
         obj = class_def()
 
         output_data, output_ui = get_output_data(obj, input_data_all)
@@ -143,7 +168,11 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
-                server.send_sync("executed", { "node": unique_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
+                server.send_sync(
+                    "executed",
+                    {"node": unique_id, "output": output_ui, "prompt_id": prompt_id},
+                    server.client_id,
+                )
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
 
@@ -164,7 +193,9 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
 
         output_data_formatted = {}
         for node_id, node_outputs in outputs.items():
-            output_data_formatted[node_id] = [[format_value(x) for x in l] for l in node_outputs]
+            output_data_formatted[node_id] = [
+                [format_value(x) for x in l] for l in node_outputs
+            ]
 
         print("!!! Exception during processing !!!")
         print(traceback.format_exc())
@@ -175,7 +206,7 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             "exception_type": exception_type,
             "traceback": traceback.format_tb(tb),
             "current_inputs": input_data_formatted,
-            "current_outputs": output_data_formatted
+            "current_outputs": output_data_formatted,
         }
         return (False, error_details, ex)
 
@@ -183,9 +214,10 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
 
     return (True, None, None)
 
+
 def recursive_will_execute(prompt, outputs, current_item):
     unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
+    inputs = prompt[unique_id]["inputs"]
     will_execute = []
     if unique_id in outputs:
         return []
@@ -200,29 +232,32 @@ def recursive_will_execute(prompt, outputs, current_item):
 
     return will_execute + [unique_id]
 
+
 def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item):
     unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
-    class_type = prompt[unique_id]['class_type']
+    inputs = prompt[unique_id]["inputs"]
+    class_type = prompt[unique_id]["class_type"]
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
 
-    is_changed_old = ''
-    is_changed = ''
+    is_changed_old = ""
+    is_changed = ""
     to_delete = False
-    if hasattr(class_def, 'IS_CHANGED'):
-        if unique_id in old_prompt and 'is_changed' in old_prompt[unique_id]:
-            is_changed_old = old_prompt[unique_id]['is_changed']
-        if 'is_changed' not in prompt[unique_id]:
+    if hasattr(class_def, "IS_CHANGED"):
+        if unique_id in old_prompt and "is_changed" in old_prompt[unique_id]:
+            is_changed_old = old_prompt[unique_id]["is_changed"]
+        if "is_changed" not in prompt[unique_id]:
             input_data_all = get_input_data(inputs, class_def, unique_id, outputs)
             if input_data_all is not None:
                 try:
-                    #is_changed = class_def.IS_CHANGED(**input_data_all)
-                    is_changed = map_node_over_list(class_def, input_data_all, "IS_CHANGED")
-                    prompt[unique_id]['is_changed'] = is_changed
+                    # is_changed = class_def.IS_CHANGED(**input_data_all)
+                    is_changed = map_node_over_list(
+                        class_def, input_data_all, "IS_CHANGED"
+                    )
+                    prompt[unique_id]["is_changed"] = is_changed
                 except:
                     to_delete = True
         else:
-            is_changed = prompt[unique_id]['is_changed']
+            is_changed = prompt[unique_id]["is_changed"]
 
     if unique_id not in outputs:
         return True
@@ -232,7 +267,7 @@ def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item
             to_delete = True
         elif unique_id not in old_prompt:
             to_delete = True
-        elif inputs == old_prompt[unique_id]['inputs']:
+        elif inputs == old_prompt[unique_id]["inputs"]:
             for x in inputs:
                 input_data = inputs[x]
 
@@ -240,7 +275,9 @@ def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item
                     input_unique_id = input_data[0]
                     output_index = input_data[1]
                     if input_unique_id in outputs:
-                        to_delete = recursive_output_delete_if_changed(prompt, old_prompt, outputs, input_unique_id)
+                        to_delete = recursive_output_delete_if_changed(
+                            prompt, old_prompt, outputs, input_unique_id
+                        )
                     else:
                         to_delete = True
                     if to_delete:
@@ -253,6 +290,7 @@ def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item
         del d
     return to_delete
 
+
 class PromptExecutor:
     def __init__(self, server):
         self.outputs = {}
@@ -260,7 +298,9 @@ class PromptExecutor:
         self.old_prompt = {}
         self.server = server
 
-    def handle_execution_error(self, prompt_id, prompt, current_outputs, executed, error, ex):
+    def handle_execution_error(
+        self, prompt_id, prompt, current_outputs, executed, error, ex
+    ):
         node_id = error["node_id"]
         class_type = prompt[node_id]["class_type"]
 
@@ -281,7 +321,6 @@ class PromptExecutor:
                     "node_id": node_id,
                     "node_type": class_type,
                     "executed": list(executed),
-
                     "exception_message": error["exception_message"],
                     "exception_type": error["exception_type"],
                     "traceback": error["traceback"],
@@ -311,10 +350,12 @@ class PromptExecutor:
             self.server.client_id = None
 
         if self.server.client_id is not None:
-            self.server.send_sync("execution_start", { "prompt_id": prompt_id}, self.server.client_id)
+            self.server.send_sync(
+                "execution_start", {"prompt_id": prompt_id}, self.server.client_id
+            )
 
         with torch.inference_mode():
-            #delete cached outputs if nodes don't exist for them
+            # delete cached outputs if nodes don't exist for them
             to_delete = []
             for o in self.outputs:
                 if o not in prompt:
@@ -324,7 +365,9 @@ class PromptExecutor:
                 del d
 
             for x in prompt:
-                recursive_output_delete_if_changed(prompt, self.old_prompt, self.outputs, x)
+                recursive_output_delete_if_changed(
+                    prompt, self.old_prompt, self.outputs, x
+                )
 
             current_outputs = set(self.outputs.keys())
             for x in list(self.outputs_ui.keys()):
@@ -333,7 +376,11 @@ class PromptExecutor:
                     del d
 
             if self.server.client_id is not None:
-                self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
+                self.server.send_sync(
+                    "execution_cached",
+                    {"nodes": list(current_outputs), "prompt_id": prompt_id},
+                    self.server.client_id,
+                )
             executed = set()
             output_node_id = None
             to_execute = []
@@ -342,16 +389,39 @@ class PromptExecutor:
                 to_execute += [(0, node_id)]
 
             while len(to_execute) > 0:
-                #always execute the output that depends on the least amount of unexecuted nodes first
-                to_execute = sorted(list(map(lambda a: (len(recursive_will_execute(prompt, self.outputs, a[-1])), a[-1]), to_execute)))
+                # always execute the output that depends on the least amount of unexecuted nodes first
+                to_execute = sorted(
+                    list(
+                        map(
+                            lambda a: (
+                                len(
+                                    recursive_will_execute(prompt, self.outputs, a[-1])
+                                ),
+                                a[-1],
+                            ),
+                            to_execute,
+                        )
+                    )
+                )
                 output_node_id = to_execute.pop(0)[-1]
 
                 # This call shouldn't raise anything if there's an error deep in
                 # the actual SD code, instead it will report the node where the
                 # error was raised
-                success, error, ex = recursive_execute(self.server, prompt, self.outputs, output_node_id, extra_data, executed, prompt_id, self.outputs_ui)
+                success, error, ex = recursive_execute(
+                    self.server,
+                    prompt,
+                    self.outputs,
+                    output_node_id,
+                    extra_data,
+                    executed,
+                    prompt_id,
+                    self.outputs_ui,
+                )
                 if success is not True:
-                    self.handle_execution_error(prompt_id, prompt, current_outputs, executed, error, ex)
+                    self.handle_execution_error(
+                        prompt_id, prompt, current_outputs, executed, error, ex
+                    )
                     break
 
             for x in executed:
@@ -359,18 +429,17 @@ class PromptExecutor:
             self.server.last_node_id = None
 
 
-
 def validate_inputs(prompt, item, validated):
     unique_id = item
     if unique_id in validated:
         return validated[unique_id]
 
-    inputs = prompt[unique_id]['inputs']
-    class_type = prompt[unique_id]['class_type']
+    inputs = prompt[unique_id]["inputs"]
+    class_type = prompt[unique_id]["class_type"]
     obj_class = nodes.NODE_CLASS_MAPPINGS[class_type]
 
     class_inputs = obj_class.INPUT_TYPES()
-    required_inputs = class_inputs['required']
+    required_inputs = class_inputs["required"]
 
     errors = []
     valid = True
@@ -381,9 +450,7 @@ def validate_inputs(prompt, item, validated):
                 "type": "required_input_missing",
                 "message": "Required input is missing",
                 "details": f"{x}",
-                "extra_info": {
-                    "input_name": x
-                }
+                "extra_info": {"input_name": x},
             }
             errors.append(error)
             continue
@@ -400,14 +467,14 @@ def validate_inputs(prompt, item, validated):
                     "extra_info": {
                         "input_name": x,
                         "input_config": info,
-                        "received_value": val
-                    }
+                        "received_value": val,
+                    },
                 }
                 errors.append(error)
                 continue
 
             o_id = val[0]
-            o_class_type = prompt[o_id]['class_type']
+            o_class_type = prompt[o_id]["class_type"]
             r = nodes.NODE_CLASS_MAPPINGS[o_class_type].RETURN_TYPES
             if r[val[1]] != type_input:
                 received_type = r[val[1]]
@@ -420,8 +487,8 @@ def validate_inputs(prompt, item, validated):
                         "input_name": x,
                         "input_config": info,
                         "received_type": received_type,
-                        "linked_node": val
-                    }
+                        "linked_node": val,
+                    },
                 }
                 errors.append(error)
                 continue
@@ -435,19 +502,21 @@ def validate_inputs(prompt, item, validated):
                 typ, _, tb = sys.exc_info()
                 valid = False
                 exception_type = full_type_name(typ)
-                reasons = [{
-                    "type": "exception_during_inner_validation",
-                    "message": "Exception when validating inner node",
-                    "details": str(ex),
-                    "extra_info": {
-                        "input_name": x,
-                        "input_config": info,
-                        "exception_message": str(ex),
-                        "exception_type": exception_type,
-                        "traceback": traceback.format_tb(tb),
-                        "linked_node": val
+                reasons = [
+                    {
+                        "type": "exception_during_inner_validation",
+                        "message": "Exception when validating inner node",
+                        "details": str(ex),
+                        "extra_info": {
+                            "input_name": x,
+                            "input_config": info,
+                            "exception_message": str(ex),
+                            "exception_type": exception_type,
+                            "traceback": traceback.format_tb(tb),
+                            "linked_node": val,
+                        },
                     }
-                }]
+                ]
                 validated[o_id] = (False, reasons, o_id)
                 continue
         else:
@@ -470,8 +539,8 @@ def validate_inputs(prompt, item, validated):
                         "input_name": x,
                         "input_config": info,
                         "received_value": val,
-                        "exception_message": str(ex)
-                    }
+                        "exception_message": str(ex),
+                    },
                 }
                 errors.append(error)
                 continue
@@ -480,33 +549,37 @@ def validate_inputs(prompt, item, validated):
                 if "min" in info[1] and val < info[1]["min"]:
                     error = {
                         "type": "value_smaller_than_min",
-                        "message": "Value {} smaller than min of {}".format(val, info[1]["min"]),
+                        "message": "Value {} smaller than min of {}".format(
+                            val, info[1]["min"]
+                        ),
                         "details": f"{x}",
                         "extra_info": {
                             "input_name": x,
                             "input_config": info,
                             "received_value": val,
-                        }
+                        },
                     }
                     errors.append(error)
                     continue
                 if "max" in info[1] and val > info[1]["max"]:
                     error = {
                         "type": "value_bigger_than_max",
-                        "message": "Value {} bigger than max of {}".format(val, info[1]["max"]),
+                        "message": "Value {} bigger than max of {}".format(
+                            val, info[1]["max"]
+                        ),
                         "details": f"{x}",
                         "extra_info": {
                             "input_name": x,
                             "input_config": info,
                             "received_value": val,
-                        }
+                        },
                     }
                     errors.append(error)
                     continue
 
             if hasattr(obj_class, "VALIDATE_INPUTS"):
                 input_data_all = get_input_data(inputs, obj_class, unique_id)
-                #ret = obj_class.VALIDATE_INPUTS(**input_data_all)
+                # ret = obj_class.VALIDATE_INPUTS(**input_data_all)
                 ret = map_node_over_list(obj_class, input_data_all, "VALIDATE_INPUTS")
                 for i, r in enumerate(ret):
                     if r is not True:
@@ -522,7 +595,7 @@ def validate_inputs(prompt, item, validated):
                                 "input_name": x,
                                 "input_config": info,
                                 "received_value": val,
-                            }
+                            },
                         }
                         errors.append(error)
                         continue
@@ -548,7 +621,7 @@ def validate_inputs(prompt, item, validated):
                                 "input_name": x,
                                 "input_config": input_config,
                                 "received_value": val,
-                            }
+                            },
                         }
                         errors.append(error)
                         continue
@@ -561,17 +634,19 @@ def validate_inputs(prompt, item, validated):
     validated[unique_id] = ret
     return ret
 
+
 def full_type_name(klass):
     module = klass.__module__
-    if module == 'builtins':
+    if module == "builtins":
         return klass.__qualname__
-    return module + '.' + klass.__qualname__
+    return module + "." + klass.__qualname__
+
 
 def validate_prompt(prompt):
     outputs = set()
     for x in prompt:
-        class_ = nodes.NODE_CLASS_MAPPINGS[prompt[x]['class_type']]
-        if hasattr(class_, 'OUTPUT_NODE') and class_.OUTPUT_NODE == True:
+        class_ = nodes.NODE_CLASS_MAPPINGS[prompt[x]["class_type"]]
+        if hasattr(class_, "OUTPUT_NODE") and class_.OUTPUT_NODE == True:
             outputs.add(x)
 
     if len(outputs) == 0:
@@ -579,7 +654,7 @@ def validate_prompt(prompt):
             "type": "prompt_no_outputs",
             "message": "Prompt has no outputs",
             "details": "",
-            "extra_info": {}
+            "extra_info": {},
         }
         return (False, error, [], [])
 
@@ -598,15 +673,17 @@ def validate_prompt(prompt):
             typ, _, tb = sys.exc_info()
             valid = False
             exception_type = full_type_name(typ)
-            reasons = [{
-                "type": "exception_during_validation",
-                "message": "Exception when validating node",
-                "details": str(ex),
-                "extra_info": {
-                    "exception_type": exception_type,
-                    "traceback": traceback.format_tb(tb)
+            reasons = [
+                {
+                    "type": "exception_during_validation",
+                    "message": "Exception when validating node",
+                    "details": str(ex),
+                    "extra_info": {
+                        "exception_type": exception_type,
+                        "traceback": traceback.format_tb(tb),
+                    },
                 }
-            }]
+            ]
             validated[o] = (False, reasons, o)
 
         if valid is True:
@@ -626,11 +703,11 @@ def validate_prompt(prompt):
                 # So don't return those nodes as having errors in the response.
                 if valid is not True and len(reasons) > 0:
                     if node_id not in node_errors:
-                        class_type = prompt[node_id]['class_type']
+                        class_type = prompt[node_id]["class_type"]
                         node_errors[node_id] = {
                             "errors": reasons,
                             "dependent_outputs": [],
-                            "class_type": class_type
+                            "class_type": class_type,
                         }
                         print(f"* {class_type} {node_id}:")
                         for reason in reasons:
@@ -649,7 +726,7 @@ def validate_prompt(prompt):
             "type": "prompt_outputs_failed_validation",
             "message": "Prompt outputs failed validation",
             "details": errors_list,
-            "extra_info": {}
+            "extra_info": {},
         }
 
         return (False, error, list(good_outputs), node_errors)
@@ -688,7 +765,7 @@ class PromptQueue:
     def task_done(self, item_id, outputs):
         with self.mutex:
             prompt = self.currently_running.pop(item_id)
-            self.history[prompt[1]] = { "prompt": prompt, "outputs": {} }
+            self.history[prompt[1]] = {"prompt": prompt, "outputs": {}}
             for o in outputs:
                 self.history[prompt[1]]["outputs"][o] = outputs[o]
             self.server.queue_updated()
