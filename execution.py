@@ -388,6 +388,8 @@ class PromptExecutor:
             for node_id in list(execute_outputs):
                 to_execute += [(0, node_id)]
 
+            print(to_execute)
+
             while len(to_execute) > 0:
                 # always execute the output that depends on the least amount of unexecuted nodes first
                 to_execute = sorted(

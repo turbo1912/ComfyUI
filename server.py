@@ -10,6 +10,7 @@ import glob
 import struct
 from PIL import Image
 from io import BytesIO
+from google.cloud import storage
 
 try:
     import aiohttp
@@ -59,6 +60,55 @@ def create_cors_middleware(allowed_origin: str):
     return cors_middleware
 
 
+def upload_to_gcs(file: str, dest_blob_name: str, bucket, uuid: str):
+    import os
+
+    remote_path = f"{dest_blob_name}/{uuid}/{os.path.basename(file)}"
+    blob = bucket.blob(remote_path)
+    blob.upload_from_filename(file)
+
+
+def get_gcs_bucket():
+    import os
+    import json
+
+    sa = os.environ.get("GCLOUD_SA_JSON")
+    loaded = json.loads(sa, strict=False)
+
+    with open("/root/gcp_sa.json", "w") as f:
+        json.dump(loaded, f)
+
+    from google.cloud import storage
+
+    try:
+        storage_client = storage.Client.from_service_account_json("/root/gcp_sa.json")
+        bucket = storage_client.get_bucket("fal_registry_image_results")
+        return bucket
+    except Exception as e:
+        # Stringify original error so that it can be passed to the fal-serverless client
+        raise Exception(str(e))
+
+
+def generate_download_signed_url_v4(bucket_name, blob_name) -> str:
+    import datetime
+
+    # bucket_name = 'your-bucket-name'
+    # blob_name = 'your-object-name'
+    storage_client = storage.Client.from_service_account_json("/root/gcp_sa.json")
+
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    url = blob.generate_signed_url(
+        version="v4",
+        # This URL is valid for 15 minutes
+        expiration=datetime.timedelta(minutes=15),
+        # Allow GET requests using this URL.
+        method="GET",
+    )
+    return url
+
+
 class PromptServer:
     def __init__(self, loop):
         PromptServer.instance = self
@@ -81,6 +131,7 @@ class PromptServer:
         self.routes = routes
         self.last_node_id = None
         self.client_id = None
+        self.executor = execution.PromptExecutor(self)
 
         @routes.get("/ws")
         async def websocket_handler(request):
@@ -494,56 +545,65 @@ class PromptServer:
                     self.prompt_queue.put(
                         (number, prompt_id, prompt, extra_data, outputs_to_execute)
                     )
-                    e = execution.PromptExecutor(self)
+
                     item, item_id = self.prompt_queue.get()
                     prompt_id = item[1]
-                    e.execute(item[2], prompt_id, item[3], item[4])
-                    self.prompt_queue.task_done(item_id, e.outputs_ui)
+                    self.executor.execute(item[2], prompt_id, item[3], item[4])
+                    self.prompt_queue.task_done(item_id, self.executor.outputs_ui)
 
-                    print("executing the task here")
-                    return web.json_response("task done")
+                    id = str(uuid.uuid4())
+                    ## check the image prefix, if not use default
+                    upload_to_gcs(
+                        f"/data/repos/comfy/output/adem-vanilla.png",
+                        "lora",
+                        get_gcs_bucket(),
+                        id,
+                    )
+
+                    url = generate_download_signed_url_v4(
+                        "fal_registry_image_results",
+                        f"lora/{id}/adem-vanilla.png",
+                    )
+
+                    return web.json_response(url)
                     # return web.json_response({"prompt_id": prompt_id, "number": number})
                 else:
                     print("invalid prompt:", valid[1])
                     return web.json_response(
                         {"error": valid[1], "node_errors": valid[3]}, status=400
                     )
-            else:
-                return web.json_response(
-                    {"error": "no prompt", "node_errors": []}, status=400
-                )
 
-        @routes.post("/queue")
-        async def post_queue(request):
-            json_data = await request.json()
-            if "clear" in json_data:
-                if json_data["clear"]:
-                    self.prompt_queue.wipe_queue()
-            if "delete" in json_data:
-                to_delete = json_data["delete"]
-                for id_to_delete in to_delete:
-                    delete_func = lambda a: a[1] == id_to_delete
-                    self.prompt_queue.delete_queue_item(delete_func)
+            @routes.post("/queue")
+            async def post_queue(request):
+                json_data = await request.json()
+                if "clear" in json_data:
+                    if json_data["clear"]:
+                        self.prompt_queue.wipe_queue()
+                if "delete" in json_data:
+                    to_delete = json_data["delete"]
+                    for id_to_delete in to_delete:
+                        delete_func = lambda a: a[1] == id_to_delete
+                        self.prompt_queue.delete_queue_item(delete_func)
 
-            return web.Response(status=200)
+                return web.Response(status=200)
 
-        @routes.post("/interrupt")
-        async def post_interrupt(request):
-            nodes.interrupt_processing()
-            return web.Response(status=200)
+            @routes.post("/interrupt")
+            async def post_interrupt(request):
+                nodes.interrupt_processing()
+                return web.Response(status=200)
 
-        @routes.post("/history")
-        async def post_history(request):
-            json_data = await request.json()
-            if "clear" in json_data:
-                if json_data["clear"]:
-                    self.prompt_queue.wipe_history()
-            if "delete" in json_data:
-                to_delete = json_data["delete"]
-                for id_to_delete in to_delete:
-                    self.prompt_queue.delete_history_item(id_to_delete)
+            @routes.post("/history")
+            async def post_history(request):
+                json_data = await request.json()
+                if "clear" in json_data:
+                    if json_data["clear"]:
+                        self.prompt_queue.wipe_history()
+                if "delete" in json_data:
+                    to_delete = json_data["delete"]
+                    for id_to_delete in to_delete:
+                        self.prompt_queue.delete_history_item(id_to_delete)
 
-            return web.Response(status=200)
+                return web.Response(status=200)
 
     def add_routes(self):
         self.app.add_routes(self.routes)
